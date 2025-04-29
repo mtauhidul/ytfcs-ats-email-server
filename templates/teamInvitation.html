@@ -1,0 +1,79 @@
+<!-- team invitation template -->
+<!DOCTYPE html>
+<html>
+  <head>
+    <style>
+      body {
+        font-family: Arial, sans-serif;
+        line-height: 1.6;
+      }
+      .container {
+        max-width: 600px;
+        margin: 0 auto;
+        padding: 20px;
+      }
+      .header {
+        text-align: center;
+        margin-bottom: 20px;
+      }
+      .content {
+        background-color: #f9f9f9;
+        padding: 20px;
+        border-radius: 5px;
+      }
+      .footer {
+        margin-top: 30px;
+        text-align: center;
+        font-size: 12px;
+        color: #777;
+      }
+      .button {
+        display: inline-block;
+        background-color: #007bff;
+        color: white;
+        padding: 10px 20px;
+        text-decoration: none;
+        border-radius: 5px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <div class="header">
+        <h2>Welcome to the ATS Platform</h2>
+      </div>
+
+      <div class="content">
+        <p>Hello {{ name }},</p>
+
+        <p>
+          {{ inviterName }} has invited you to join the ATS platform as a
+          <strong>{{ role }}</strong>.
+        </p>
+
+        <p>
+          Our Applicant Tracking System helps streamline the hiring process and
+          collaboration among team members.
+        </p>
+
+        <h3>Getting Started:</h3>
+        <ol>
+          <li>Click the login button below</li>
+          <li>Use this email address to sign in</li>
+          <li>You'll receive a magic link to access your account</li>
+          <li>Set up a password for future logins (optional)</li>
+        </ol>
+
+        <p style="text-align: center; margin-top: 30px">
+          <a href="{{ loginUrl }}" class="button">Log In Now</a>
+        </p>
+
+        <p>If you have any questions, please contact your administrator.</p>
+      </div>
+
+      <div class="footer">
+        <p>This is an automated message from your ATS system.</p>
+      </div>
+    </div>
+  </body>
+</html>

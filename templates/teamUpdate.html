@@ -1,0 +1,75 @@
+<!-- team update template -->
+<!DOCTYPE html>
+<html>
+  <head>
+    <style>
+      body {
+        font-family: Arial, sans-serif;
+        line-height: 1.6;
+      }
+      .container {
+        max-width: 600px;
+        margin: 0 auto;
+        padding: 20px;
+      }
+      .header {
+        text-align: center;
+        margin-bottom: 20px;
+      }
+      .content {
+        background-color: #f9f9f9;
+        padding: 20px;
+        border-radius: 5px;
+      }
+      .footer {
+        margin-top: 30px;
+        text-align: center;
+        font-size: 12px;
+        color: #777;
+      }
+      .button {
+        display: inline-block;
+        background-color: #007bff;
+        color: white;
+        padding: 10px 20px;
+        text-decoration: none;
+        border-radius: 5px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <div class="header">
+        <h2>Your ATS Account Has Been Updated</h2>
+      </div>
+
+      <div class="content">
+        <p>Hello {{ name }},</p>
+
+        <p>{{ updaterName }} has updated your role in the ATS platform.</p>
+
+        <p>
+          <strong>Previous Role:</strong> {{ previousRole }}<br />
+          <strong>New Role:</strong> {{ role }}
+        </p>
+
+        <p>
+          This change may affect your permissions and access within the system.
+        </p>
+
+        <p style="text-align: center; margin-top: 30px">
+          <a href="{{ loginUrl }}" class="button">Log In to Your Account</a>
+        </p>
+
+        <p>
+          If you have any questions about this change, please contact your
+          administrator.
+        </p>
+      </div>
+
+      <div class="footer">
+        <p>This is an automated message from your ATS system.</p>
+      </div>
+    </div>
+  </body>
+</html>
