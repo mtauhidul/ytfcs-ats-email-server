@@ -1,62 +1,19 @@
-// Main application entry point
-require("dotenv").config();
+// server/api/parse-resume.js
+
 const express = require("express");
-const cors = require("cors");
-const helmet = require("helmet");
-const rateLimit = require("express-rate-limit");
-const bodyParser = require("body-parser");
+const router = express.Router();
 const multer = require("multer");
 const path = require("path");
 const fs = require("fs");
-const { errorHandler } = require("./middleware/errorHandler");
 const { OpenAI } = require("openai");
 const pdfParse = require("pdf-parse");
 const mammoth = require("mammoth");
-
-// Route imports
-const notificationRoutes = require("./routes/notifications");
-const communicationRoutes = require("./routes/communications");
-const webhookRoutes = require("./routes/webhooks");
-const importRoutes = require("./routes/import");
-// We'll create the resume parser routes but not import them
-
-const app = express();
-const PORT = process.env.PORT || 3001;
-
-// Apply basic security middleware
-app.use(helmet());
-app.use(cors());
-app.use(bodyParser.json({ limit: "10mb" }));
-
-// Apply rate limiting
-const apiLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100, // Limit each IP to 100 requests per window
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: "Too many requests, please try again later.",
-});
-
-// Apply rate limiting to all routes
-app.use(apiLimiter);
-
-// Routes
-app.use("/api/email/notifications", notificationRoutes);
-app.use("/api/email/communications", communicationRoutes);
-app.use("/api/email/webhooks", webhookRoutes);
-app.use("/api/email/import", importRoutes);
-
-// Simple health check endpoint
-app.get("/health", (req, res) => {
-  res.status(200).json({ status: "ok" });
-});
-
-// ----- RESUME PARSER INTEGRATION STARTS HERE -----
+const cors = require("cors");
 
 // Configure multer for file upload
 const storage = multer.diskStorage({
   destination: function (req, file, cb) {
-    const uploadsDir = path.join(__dirname, "uploads");
+    const uploadsDir = path.join(__dirname, "../uploads");
     // Create directory if it doesn't exist
     if (!fs.existsSync(uploadsDir)) {
       fs.mkdirSync(uploadsDir, { recursive: true });
@@ -172,8 +129,11 @@ async function parseResumeWithOpenAI(text, fileName) {
   }
 }
 
+// Enable CORS for the router
+router.use(cors());
+
 // Resume parsing endpoint
-app.post("/api/resume/parse", upload.single("file"), async (req, res, next) => {
+router.post("/parse", upload.single("file"), async (req, res) => {
   try {
     if (!req.file) {
       return res
@@ -212,16 +172,12 @@ app.post("/api/resume/parse", upload.single("file"), async (req, res, next) => {
       data: parsedResume,
     });
   } catch (error) {
-    // Pass to error handler
-    next(error);
+    console.error("Error in resume parsing endpoint:", error);
+    return res.status(500).json({
+      success: false,
+      error: error.message || "Failed to parse resume",
+    });
   }
 });
 
-// ----- RESUME PARSER INTEGRATION ENDS HERE -----
-
-// Error handling middleware
-app.use(errorHandler);
-
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-});
+module.exports = router;
