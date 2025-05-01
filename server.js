@@ -127,15 +127,34 @@ async function extractTextFromDOCX(filePath) {
 }
 
 // Parse resume text using OpenAI
+// Update this function in your server code (in the resume parser integration section)
+// This fixes the response_format issue with the OpenAI API
+
 async function parseResumeWithOpenAI(text, fileName) {
   try {
-    const response = await openai.chat.completions.create({
-      model: "gpt-4", // You can use "gpt-3.5-turbo" for lower cost
+    // Check which model is being used
+    const model = process.env.OPENAI_MODEL || "gpt-3.5-turbo"; // Default to 3.5 if not specified
+
+    // Create the base request
+    const requestOptions = {
+      model: model,
       messages: [
         {
           role: "system",
           content: `You are a resume parsing expert. Extract structured information from the resume text provided. 
-          Return a JSON object with the following fields if they can be found:
+          Extract the following information if available:
+          - Full Name
+          - Email address
+          - Phone number
+          - LinkedIn URL
+          - Location (City, State, Country)
+          - Education details (institution, degree, year)
+          - Total years of experience (calculate if possible)
+          - Current or most recent job title
+          - Technical and soft skills
+          - Languages spoken
+          
+          Format your response as a valid JSON object with these fields:
           {
             "name": "Full Name",
             "email": "Email address",
@@ -150,27 +169,59 @@ async function parseResumeWithOpenAI(text, fileName) {
             "resumeText": "The original text of the resume"
           }
           
-          Be accurate and extract as much information as possible. If any field cannot be found, set it to null or an empty array.`,
+          Be accurate and extract as much information as possible. If any field cannot be found, set it to null or an empty array as appropriate.`,
         },
         {
           role: "user",
           content: `Parse the following resume: ${text}`,
         },
       ],
-      response_format: { type: "json_object" },
       temperature: 0.2,
-    });
+    };
 
-    // Parse the response JSON
-    const parsedResume = JSON.parse(response.choices[0].message.content);
+    // Add response_format only for models that support it (GPT-4 and newer GPT-3.5-turbo)
+    if (
+      model.includes("gpt-4") ||
+      model.includes("gpt-3.5-turbo-1106") ||
+      model.includes("gpt-3.5-turbo-0125")
+    ) {
+      requestOptions.response_format = { type: "json_object" };
+    }
+
+    const response = await openai.chat.completions.create(requestOptions);
+
+    // Extract the content from the response
+    const responseContent = response.choices[0].message.content;
+
+    // Parse the response as JSON, handling potential errors
+    let parsedResume;
+    try {
+      parsedResume = JSON.parse(responseContent);
+    } catch (parseError) {
+      console.error("Error parsing OpenAI response as JSON:", responseContent);
+      // Try to extract JSON using regex as a fallback
+      const jsonMatch = responseContent.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        try {
+          parsedResume = JSON.parse(jsonMatch[0]);
+        } catch (e) {
+          throw new Error("Failed to parse AI response as JSON");
+        }
+      } else {
+        throw new Error("Failed to extract structured data from resume");
+      }
+    }
 
     // Add metadata about the file
     parsedResume.originalFilename = fileName;
+    parsedResume.resumeText = parsedResume.resumeText || text;
 
     return parsedResume;
   } catch (error) {
     console.error("Error parsing resume with OpenAI:", error);
-    throw new Error("Failed to parse resume with AI");
+    throw new Error(
+      `Failed to parse resume with AI: ${error.message || "Unknown error"}`
+    );
   }
 }
 
