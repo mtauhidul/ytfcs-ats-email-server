@@ -18,7 +18,7 @@ const notificationRoutes = require("./routes/notifications");
 const communicationRoutes = require("./routes/communications");
 const webhookRoutes = require("./routes/webhooks");
 const importRoutes = require("./routes/import");
-// We'll create the resume parser routes but not import them
+const emailImportRoutes = require("./routes/email-import"); // Add new email import routes
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -45,6 +45,8 @@ app.use("/api/email/notifications", notificationRoutes);
 app.use("/api/email/communications", communicationRoutes);
 app.use("/api/email/webhooks", webhookRoutes);
 app.use("/api/email/import", importRoutes);
+// Mount email import routes at a more specific path to avoid conflicts
+app.use("/api/email/inbox", emailImportRoutes); // Changed path to /api/email/inbox
 
 // Simple health check endpoint
 app.get("/health", (req, res) => {
@@ -218,6 +220,77 @@ app.post("/api/resume/parse", upload.single("file"), async (req, res, next) => {
 });
 
 // ----- RESUME PARSER INTEGRATION ENDS HERE -----
+
+// ----- EMAIL ATTACHMENT PARSING ENDPOINT -----
+// This endpoint allows parsing resume attachments from emails
+app.post(
+  "/api/email/parse-attachment",
+  upload.single("attachment"),
+  async (req, res, next) => {
+    try {
+      if (!req.file) {
+        return res
+          .status(400)
+          .json({ success: false, error: "No attachment uploaded" });
+      }
+
+      const filePath = req.file.path;
+      const fileExtension = path.extname(req.file.originalname).toLowerCase();
+
+      // Extract text based on file type
+      let text;
+      if (fileExtension === ".pdf") {
+        text = await extractTextFromPDF(filePath);
+      } else if (fileExtension === ".doc" || fileExtension === ".docx") {
+        text = await extractTextFromDOCX(filePath);
+      } else if (fileExtension === ".txt") {
+        // For text files, just read the content
+        text = fs.readFileSync(filePath, "utf8");
+      } else {
+        return res
+          .status(400)
+          .json({ success: false, error: "Unsupported file type" });
+      }
+
+      // Parse the resume text with OpenAI
+      const parsedResume = await parseResumeWithOpenAI(
+        text,
+        req.file.originalname
+      );
+
+      // Add source information
+      parsedResume.source = "email_attachment";
+      parsedResume.importMethod = "ai_parser";
+
+      // Clean up the temporary file
+      fs.unlinkSync(filePath);
+
+      // Return the parsed resume data
+      return res.json({
+        success: true,
+        data: parsedResume,
+      });
+    } catch (error) {
+      // Clean up file if exists
+      if (req.file && req.file.path) {
+        try {
+          fs.unlinkSync(req.file.path);
+        } catch (cleanupError) {
+          console.warn("Failed to clean up file:", cleanupError);
+        }
+      }
+
+      // Pass to error handler
+      next(error);
+    }
+  }
+);
+
+// For debugging purposes - to help identify route issues
+app.use((req, res, next) => {
+  console.log(`404 Not Found: ${req.method} ${req.originalUrl}`);
+  next();
+});
 
 // Error handling middleware
 app.use(errorHandler);
