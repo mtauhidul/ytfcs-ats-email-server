@@ -46,7 +46,10 @@ const processAttachment = async (attachment, content) => {
 
       // Call the internal parse API endpoint
       const response = await axios.post(
-        "http://localhost:" + (process.env.PORT || 3001) + "/api/resume/parse",
+        process.env.RESUME_PARSE_API_URL ||
+          "http://localhost:" +
+            (process.env.PORT || 3001) +
+            "/api/resume/parse",
         formData,
         {
           headers: {
