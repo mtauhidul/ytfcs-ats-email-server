@@ -33,7 +33,7 @@ const communicationRoutes = require("./routes/communications");
 const webhookRoutes = require("./routes/webhooks");
 const importRoutes = require("./routes/import");
 const emailImportRoutes = require("./routes/email-import");
-const resumeParserRoutes = require("./api/parse-resume"); // Import resume parser routes
+const resumeParserRoutes = require("./api/parse-resume");
 
 // Routes
 app.use("/api/email/notifications", notificationRoutes);
@@ -41,13 +41,19 @@ app.use("/api/email/communications", communicationRoutes);
 app.use("/api/email/webhooks", webhookRoutes);
 app.use("/api/email/import", importRoutes);
 app.use("/api/email/inbox", emailImportRoutes);
-app.use("/api/resume", resumeParserRoutes); // Mount resume parser routes
+app.use("/api/resume", resumeParserRoutes);
 
-// Map the email attachment parsing to the appropriate endpoint
-app.use("/api/email/parse-attachment", (req, res, next) => {
-  // This redirects to the /parse-attachment endpoint in the resume parser router
+// Map email routes that are accessed directly at /api/email/
+app.post("/api/email/download-attachment", (req, res, next) => {
+  // Delegate to the email import routes
+  req.url = "/download-attachment";
+  emailImportRoutes(req, res, next);
+});
+
+app.post("/api/email/parse-attachment", (req, res, next) => {
+  // Delegate to the email import routes
   req.url = "/parse-attachment";
-  resumeParserRoutes(req, res, next);
+  emailImportRoutes(req, res, next);
 });
 
 // Simple health check endpoint

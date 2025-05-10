@@ -136,7 +136,8 @@ const listEmails = async (connectionConfig, filters = {}) => {
     const emails = [];
 
     imap.once("ready", () => {
-      imap.openBox("INBOX", false, (err, box) => {
+      imap.openBox("INBOX", true, (err, box) => {
+        // Changed to readonly mode
         if (err) {
           imap.end();
           return reject(err);
@@ -148,17 +149,18 @@ const listEmails = async (connectionConfig, filters = {}) => {
         // For date filtering
         if (filters.dateFilter === "today") {
           const today = new Date();
-          searchCriteria = [["SINCE", today.toISOString().split("T")[0]]]; // Note the extra brackets!
+          searchCriteria = [["SINCE", today.toISOString().split("T")[0]]];
         } else if (filters.dateFilter === "week") {
           const lastWeek = new Date();
           lastWeek.setDate(lastWeek.getDate() - 7);
-          searchCriteria = [["SINCE", lastWeek.toISOString().split("T")[0]]]; // Note the extra brackets!
+          searchCriteria = [["SINCE", lastWeek.toISOString().split("T")[0]]];
         } else if (filters.dateFilter === "month") {
           const lastMonth = new Date();
           lastMonth.setMonth(lastMonth.getMonth() - 1);
-          searchCriteria = [["SINCE", lastMonth.toISOString().split("T")[0]]]; // Note the extra brackets!
+          searchCriteria = [["SINCE", lastMonth.toISOString().split("T")[0]]];
         }
 
+        // Use UID search instead of sequence numbers
         imap.search(searchCriteria, (err, results) => {
           if (err) {
             imap.end();
@@ -170,14 +172,25 @@ const listEmails = async (connectionConfig, filters = {}) => {
             return resolve({ emails: [] });
           }
 
+          logger.info("Search results:", {
+            count: results.length,
+            first: results[0],
+            last: results[results.length - 1],
+          });
+
           // Create a fetch for retrieving email headers and structure for attachments
           const fetch = imap.fetch(results, {
             bodies: ["HEADER.FIELDS (FROM TO SUBJECT DATE)"],
             struct: true,
+            envelope: true,
           });
 
           fetch.on("message", (msg, seqno) => {
-            const email = { id: seqno.toString(), hasAttachments: false };
+            const email = {
+              id: seqno.toString(),
+              seqno: seqno,
+              hasAttachments: false,
+            };
 
             msg.on("body", (stream, info) => {
               let buffer = "";
@@ -189,14 +202,13 @@ const listEmails = async (connectionConfig, filters = {}) => {
                 const header = Imap.parseHeader(buffer);
 
                 if (!header.from || !header.from.length) {
-                  return; // Skip invalid emails
+                  return;
                 }
 
                 const fromHeader = header.from[0];
                 let fromName = fromHeader;
                 let fromEmail = fromHeader;
 
-                // Extract name and email from "Name <email>" format
                 const emailMatch = fromHeader.match(/<(.+)>/);
                 if (emailMatch) {
                   fromEmail = emailMatch[1];
@@ -218,29 +230,41 @@ const listEmails = async (connectionConfig, filters = {}) => {
             });
 
             msg.once("attributes", (attrs) => {
+              // Store UID for later use
+              email.uid = attrs.uid;
+              email.messageId = attrs.uid; // Add this for better tracking
+
               // Check if email has attachments
               const attachments = [];
               if (attrs.struct) {
-                const traverse = (parts) => {
-                  for (const part of parts) {
+                let attachmentIndex = 0;
+
+                const traverse = (parts, parentPartId = "") => {
+                  for (let i = 0; i < parts.length; i++) {
+                    const part = parts[i];
+                    const currentPartId = parentPartId
+                      ? `${parentPartId}.${i + 1}`
+                      : `${i + 1}`;
+
                     if (Array.isArray(part)) {
-                      traverse(part);
+                      traverse(part, currentPartId);
                     } else if (
                       part.disposition &&
                       ["attachment", "inline"].includes(
                         part.disposition.type.toLowerCase()
                       )
                     ) {
+                      attachmentIndex++;
                       const filename =
-                        part.params?.name ||
-                        `unknown-${attachments.length + 1}`;
-                      // Determine if it's likely a resume
+                        part.params?.name || `unknown-${attachmentIndex}`;
+
                       const isResume = /\.(pdf|doc|docx|rtf|txt|odt)$/i.test(
                         filename
                       );
 
                       attachments.push({
-                        id: `att-${seqno}-${attachments.length + 1}`,
+                        id: `att-${email.uid || seqno}-${attachmentIndex}`, // Use UID if available
+                        partId: currentPartId,
                         name: filename,
                         contentType:
                           part.type?.toLowerCase() +
@@ -249,6 +273,7 @@ const listEmails = async (connectionConfig, filters = {}) => {
                           "application/octet-stream",
                         size: part.size || 0,
                         isResume,
+                        encoding: part.encoding,
                       });
                     }
                   }
@@ -264,15 +289,12 @@ const listEmails = async (connectionConfig, filters = {}) => {
             });
 
             msg.once("end", () => {
-              // Only add the email if filters are satisfied
               let addEmail = true;
 
-              // Apply job-related filter if requested
               if (filters.jobRelated && !isJobRelatedEmail(email.subject)) {
                 addEmail = false;
               }
 
-              // Apply attachment filter if requested
               if (filters.withAttachments && !email.hasAttachments) {
                 addEmail = false;
               }
@@ -290,6 +312,10 @@ const listEmails = async (connectionConfig, filters = {}) => {
 
           fetch.once("end", () => {
             imap.end();
+            logger.info(
+              "Listed emails with UIDs:",
+              emails.map((e) => ({ id: e.id, uid: e.uid, subject: e.subject }))
+            );
             resolve({ emails });
           });
         });
@@ -700,6 +726,481 @@ const sendCandidateEmail = async ({
   });
 };
 
+// services/emailService.js (updated downloadEmailAttachment with better logging)
+
+// services/emailService.js (enhanced attachment extraction)
+
+/**
+ * Download an email attachment
+ * @param {Object} connectionConfig - Email provider configuration
+ * @param {string} emailId - Email ID (sequence number)
+ * @param {string} attachmentId - Attachment ID
+ * @returns {Promise<Object>} Attachment data with content
+ */
+const downloadEmailAttachment = async (
+  connectionConfig,
+  emailId,
+  attachmentId
+) => {
+  return new Promise((resolve, reject) => {
+    logger.info("Starting attachment download:", { emailId, attachmentId });
+
+    const imap = setupImapConnection(connectionConfig);
+    let attachmentData = null;
+    let attachmentFound = false;
+    let targetPart = null;
+    let targetPartId = null;
+
+    imap.once("ready", () => {
+      logger.info("IMAP connection ready for attachment download");
+
+      imap.openBox("INBOX", true, (err, box) => {
+        if (err) {
+          logger.error("Error opening inbox:", err);
+          imap.end();
+          return reject(err);
+        }
+
+        logger.info("Inbox opened, total messages:", box.messages.total);
+
+        try {
+          // Parse the attachment ID to get the UID and target index
+          const attachmentMatch = attachmentId.match(/att-(\d+)-(\d+)/);
+          let targetAttachmentIndex = 1;
+          let targetUid = null;
+
+          if (attachmentMatch) {
+            targetUid = parseInt(attachmentMatch[1], 10);
+            targetAttachmentIndex = parseInt(attachmentMatch[2], 10);
+          }
+
+          logger.info("Looking for attachment:", {
+            emailId,
+            targetUid,
+            attachmentId,
+            targetAttachmentIndex,
+          });
+
+          if (targetUid) {
+            // First get the message structure
+            const structFetch = imap.fetch(targetUid, {
+              struct: true,
+              uid: true,
+            });
+
+            structFetch.on("message", (msg, msgSeqno) => {
+              logger.info("Getting message structure:", {
+                targetUid,
+                msgSeqno,
+              });
+
+              msg.once("attributes", (attrs) => {
+                if (attrs.struct) {
+                  let attachmentIndex = 0;
+
+                  const findAttachment = (parts, parentPartId = "") => {
+                    for (let i = 0; i < parts.length; i++) {
+                      const part = parts[i];
+
+                      if (Array.isArray(part)) {
+                        findAttachment(
+                          part,
+                          parentPartId ? `${parentPartId}.${i + 1}` : `${i + 1}`
+                        );
+                      } else if (
+                        part.disposition &&
+                        ["attachment", "inline"].includes(
+                          part.disposition.type.toLowerCase()
+                        )
+                      ) {
+                        attachmentIndex++;
+                        const currentPartId = parentPartId
+                          ? `${parentPartId}.${i + 1}`
+                          : `${i + 1}`;
+
+                        if (attachmentIndex === targetAttachmentIndex) {
+                          logger.info("Target attachment found!", {
+                            partId: currentPartId,
+                            filename: part.params?.name,
+                            encoding: part.encoding,
+                            size: part.size,
+                            type: part.type,
+                            subtype: part.subtype,
+                          });
+                          attachmentFound = true;
+                          targetPartId = currentPartId;
+                          targetPart = part;
+                        }
+                      }
+                    }
+                  };
+
+                  findAttachment(attrs.struct);
+
+                  if (!attachmentFound) {
+                    logger.error("Attachment not found");
+                    imap.end();
+                    reject(new Error(`Attachment ${attachmentId} not found`));
+                  }
+                }
+              });
+            });
+
+            structFetch.once("end", () => {
+              if (attachmentFound && targetPart) {
+                logger.info(
+                  "Structure fetch completed, now fetching full message"
+                );
+
+                // Fetch the full message
+                const fullFetch = imap.fetch(targetUid, {
+                  bodies: "",
+                  uid: true,
+                });
+
+                fullFetch.on("message", (fullMsg) => {
+                  logger.info("Processing full message");
+                  let messageBuffer = Buffer.alloc(0);
+
+                  fullMsg.on("body", (stream) => {
+                    stream.on("data", (chunk) => {
+                      messageBuffer = Buffer.concat([messageBuffer, chunk]);
+                    });
+
+                    stream.on("end", () => {
+                      logger.info(
+                        "Full message received, size:",
+                        messageBuffer.length
+                      );
+
+                      try {
+                        const messageText = messageBuffer.toString();
+
+                        // Log the first part of the message for debugging
+                        logger.debug(
+                          "Message preview (first 500 chars):",
+                          messageText.substring(0, 500)
+                        );
+
+                        let attachmentContent = null;
+
+                        // Method 1: Find attachment by boundary
+                        const boundaryMatch = messageText.match(
+                          /boundary="?([^"\s]+)"?/
+                        );
+                        if (boundaryMatch) {
+                          const boundary = boundaryMatch[1];
+                          logger.info("Found boundary:", boundary);
+
+                          // Split message into parts
+                          const parts = messageText.split(`--${boundary}`);
+                          logger.info(
+                            "Message split into parts:",
+                            parts.length
+                          );
+
+                          // Look for the attachment part
+                          for (let i = 0; i < parts.length; i++) {
+                            const part = parts[i];
+
+                            // Debug log for each part
+                            if (part.includes("Content-Type")) {
+                              logger.debug(
+                                `Part ${i} headers:`,
+                                part.substring(0, 300)
+                              );
+                            }
+
+                            // Check various ways the attachment might be identified
+                            const isAttachmentPart =
+                              (targetPart.params?.name &&
+                                (part.includes(
+                                  `filename="${targetPart.params.name}"`
+                                ) ||
+                                  part.includes(
+                                    `filename=${targetPart.params.name}`
+                                  ) ||
+                                  part.includes(
+                                    `name="${targetPart.params.name}"`
+                                  ) ||
+                                  part.includes(
+                                    `name=${targetPart.params.name}`
+                                  ))) ||
+                              (part.includes("Content-Type: application/pdf") &&
+                                targetPart.type?.toLowerCase() ===
+                                  "application" &&
+                                targetPart.subtype?.toLowerCase() === "pdf") ||
+                              (part.includes(
+                                "Content-Disposition: attachment"
+                              ) &&
+                                part.includes(".pdf"));
+
+                            if (isAttachmentPart) {
+                              logger.info(
+                                `Found attachment part at index ${i}`
+                              );
+
+                              // Find the content start (after headers)
+                              const headerEndIndex = part.indexOf("\r\n\r\n");
+                              const altHeaderEndIndex = part.indexOf("\n\n");
+                              const contentStartIndex =
+                                headerEndIndex !== -1
+                                  ? headerEndIndex + 4
+                                  : altHeaderEndIndex !== -1
+                                    ? altHeaderEndIndex + 2
+                                    : -1;
+
+                              if (contentStartIndex !== -1) {
+                                let content = part.substring(contentStartIndex);
+
+                                // Remove trailing boundary if present
+                                const endBoundaryIndex = content.indexOf(
+                                  `\r\n--${boundary}`
+                                );
+                                if (endBoundaryIndex !== -1) {
+                                  content = content.substring(
+                                    0,
+                                    endBoundaryIndex
+                                  );
+                                }
+
+                                // Clean up the content
+                                content = content.trim();
+
+                                // Check encoding from headers
+                                const encodingMatch = part.match(
+                                  /Content-Transfer-Encoding:\s*(\S+)/i
+                                );
+                                const encoding = encodingMatch
+                                  ? encodingMatch[1].toLowerCase()
+                                  : "base64";
+
+                                logger.info("Attachment encoding:", encoding);
+                                logger.info(
+                                  "Content length before processing:",
+                                  content.length
+                                );
+
+                                if (encoding === "base64") {
+                                  // Clean base64 content
+                                  attachmentContent = content.replace(
+                                    /[\r\n\s]/g,
+                                    ""
+                                  );
+                                } else if (
+                                  encoding === "7bit" ||
+                                  encoding === "8bit"
+                                ) {
+                                  // Convert to base64
+                                  attachmentContent = Buffer.from(
+                                    content,
+                                    "binary"
+                                  ).toString("base64");
+                                } else {
+                                  // Default to base64 encoding
+                                  attachmentContent =
+                                    Buffer.from(content).toString("base64");
+                                }
+
+                                logger.info(
+                                  "Processed content length:",
+                                  attachmentContent.length
+                                );
+                                break;
+                              } else {
+                                logger.warn(
+                                  "Could not find content start in part"
+                                );
+                              }
+                            }
+                          }
+                        } else {
+                          logger.warn("No boundary found in message");
+                        }
+
+                        // Method 2: Direct regex extraction
+                        if (!attachmentContent && targetPart.params?.name) {
+                          logger.info("Trying direct regex extraction");
+
+                          // Try to find the attachment section directly
+                          const escapedFilename =
+                            targetPart.params.name.replace(
+                              /[.*+?^${}()|[\]\\]/g,
+                              "\\$&"
+                            );
+                          const attachmentRegex = new RegExp(
+                            `Content-Type:[^\\r\\n]*\\r?\\n[^\\r\\n]*filename[="]${escapedFilename}[^\\r\\n]*\\r?\\n` +
+                              `(?:[^\\r\\n]+\\r?\\n)*?` +
+                              `Content-Transfer-Encoding:\\s*(\\w+)\\r?\\n` +
+                              `(?:[^\\r\\n]+\\r?\\n)*?\\r?\\n` +
+                              `([\\s\\S]+?)(?:\\r?\\n--|\$)`,
+                            "i"
+                          );
+
+                          const match = messageText.match(attachmentRegex);
+                          if (match) {
+                            const encoding = match[1].toLowerCase();
+                            let content = match[2];
+
+                            logger.info(
+                              "Found attachment with regex, encoding:",
+                              encoding
+                            );
+
+                            if (encoding === "base64") {
+                              attachmentContent = content.replace(
+                                /[\r\n\s]/g,
+                                ""
+                              );
+                            } else {
+                              attachmentContent = Buffer.from(
+                                content,
+                                "binary"
+                              ).toString("base64");
+                            }
+                          }
+                        }
+
+                        if (attachmentContent) {
+                          attachmentData = {
+                            filename:
+                              targetPart.params?.name ||
+                              `attachment-${targetAttachmentIndex}`,
+                            contentType:
+                              `${targetPart.type}/${targetPart.subtype}`.toLowerCase(),
+                            content: attachmentContent,
+                            encoding: "base64",
+                            size:
+                              targetPart.size ||
+                              Buffer.from(attachmentContent, "base64").length,
+                          };
+
+                          logger.info(
+                            "Attachment data prepared successfully:",
+                            {
+                              filename: attachmentData.filename,
+                              contentType: attachmentData.contentType,
+                              contentLength: attachmentData.content.length,
+                              expectedSize: targetPart.size,
+                            }
+                          );
+                        } else {
+                          logger.error(
+                            "Failed to extract attachment content from message"
+                          );
+
+                          // Log more details for debugging
+                          logger.debug("Target part details:", {
+                            filename: targetPart.params?.name,
+                            type: targetPart.type,
+                            subtype: targetPart.subtype,
+                            encoding: targetPart.encoding,
+                          });
+                        }
+                      } catch (parseError) {
+                        logger.error("Error parsing full message:", parseError);
+                      }
+                    });
+                  });
+                });
+
+                fullFetch.once("error", (err) => {
+                  logger.error("Error in full fetch:", err);
+                  imap.end();
+                  reject(err);
+                });
+
+                fullFetch.once("end", () => {
+                  logger.info("Full fetch completed");
+                  setTimeout(() => {
+                    imap.end();
+                    if (attachmentData) {
+                      logger.info("Attachment download successful");
+                      resolve(attachmentData);
+                    } else {
+                      logger.error("Failed to extract attachment content");
+                      reject(new Error("Failed to extract attachment content"));
+                    }
+                  }, 500);
+                });
+              }
+            });
+
+            structFetch.once("error", (err) => {
+              logger.error("Error during structure fetch:", err);
+              imap.end();
+              reject(err);
+            });
+          } else {
+            logger.warn("No UID found in attachment ID");
+            imap.end();
+            reject(new Error("Invalid attachment ID format"));
+          }
+        } catch (error) {
+          logger.error("Error in download attachment:", error);
+          imap.end();
+          reject(error);
+        }
+      });
+    });
+
+    imap.once("error", (err) => {
+      logger.error("IMAP connection error:", err);
+      reject(err);
+    });
+
+    imap.connect();
+  });
+};
+
+/**
+ * Parse an email attachment to extract candidate data
+ * @param {Object} connectionConfig - Email provider configuration
+ * @param {string} emailId - Email ID
+ * @param {string} attachmentId - Attachment ID
+ * @returns {Promise<Object>} Parsed candidate data
+ */
+const parseEmailAttachment = async (
+  connectionConfig,
+  emailId,
+  attachmentId
+) => {
+  try {
+    // First, download the attachment
+    const attachmentData = await downloadEmailAttachment(
+      connectionConfig,
+      emailId,
+      attachmentId
+    );
+
+    if (!attachmentData || !attachmentData.content) {
+      throw new Error("Failed to download attachment");
+    }
+
+    // Convert base64 content to buffer
+    const buffer = Buffer.from(
+      attachmentData.content,
+      attachmentData.encoding || "base64"
+    );
+
+    // Process the attachment using the resume processor
+    const attachmentMeta = {
+      name: attachmentData.filename,
+      contentType: attachmentData.contentType,
+      size: attachmentData.size,
+      isResume: /\.(pdf|doc|docx|txt)$/i.test(attachmentData.filename),
+    };
+
+    // Process attachment to extract candidate data
+    const candidateData = await processAttachment(attachmentMeta, buffer);
+
+    return candidateData;
+  } catch (error) {
+    logger.error("Error parsing email attachment:", error);
+    throw error;
+  }
+};
+
 module.exports = {
   // IMAP email retrieval functions
   listEmails,
@@ -707,6 +1208,9 @@ module.exports = {
   validateConnection,
   parseCandidateFromEmail,
   isJobRelatedEmail,
+
+  downloadEmailAttachment,
+  parseEmailAttachment,
 
   // Email sending functions
   sendEmail,
